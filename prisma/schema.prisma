@@ -1,0 +1,161 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// ENUMS
+// ----------------------------------------------------
+
+enum OrgRole {
+  SUPER_ADMIN // Platform wide operator
+  ORG_ADMIN   // Organization owner/administrator
+  MANAGER     // Team manager (approvals, projects)
+  MEMBER      // Standard contributor
+  AUDITOR     // Read-only compliance auditor
+}
+
+enum OrgPlan {
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum OnboardingStatus {
+  NOT_STARTED
+  COMPANY_PROFILE
+  SECURITY_CONFIG
+  TEAM_INVITES
+  COMPLETED
+}
+
+enum AssetStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+// ----------------------------------------------------
+// MODELS
+// ----------------------------------------------------
+
+/// Tenant / Organization represents an isolated enterprise customer workspace
+model Tenant {
+  id               String           @id @default(cuid())
+  name             String
+  slug             String           @unique
+  domain           String?
+  plan             OrgPlan          @default(STARTER)
+  onboardingStatus OnboardingStatus @default(NOT_STARTED)
+  onboardingStep   Int              @default(1)
+  companyDetails   Json?
+  securitySettings Json?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  memberships Membership[]
+  auditLogs   AuditLog[]
+  assets      DocumentAsset[]
+  invitations Invitation[]
+
+  @@index([slug])
+}
+
+/// User account entity (global identity across multiple tenants)
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String?
+  avatarUrl     String?
+  isSystemAdmin Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  memberships     Membership[]
+  auditLogs       AuditLog[]
+  uploadedAssets  DocumentAsset[]
+  sentInvitations Invitation[]
+
+  @@index([email])
+}
+
+/// Membership maps a User to a Tenant with a specific Role (Granular RBAC)
+model Membership {
+  id        String   @id @default(cuid())
+  role      OrgRole  @default(MEMBER)
+  userId    String
+  tenantId  String
+  joinedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@index([userId])
+}
+
+/// Team invitation for onboarding new users into an organization
+model Invitation {
+  id          String   @id @default(cuid())
+  email       String
+  role        OrgRole  @default(MEMBER)
+  token       String   @unique
+  expiresAt   DateTime
+  tenantId    String
+  invitedById String
+  createdAt   DateTime @default(now())
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invitedBy User   @relation(fields: [invitedById], references: [id])
+
+  @@index([tenantId])
+  @@index([token])
+}
+
+/// Immutable audit trail recording all sensitive actions for SOC-2 / ISO compliance
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?
+  action     String   // e.g. "USER_INVITED", "ROLE_UPDATED", "DOCUMENT_UPLOADED"
+  resource   String   // e.g. "User", "Document", "Organization"
+  resourceId String?
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?    // Contextual payload (e.g. { previousRole: "MEMBER", newRole: "MANAGER" })
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([userId])
+}
+
+/// Cloud document asset tracking direct-to-S3 uploads with UUID mapping
+model DocumentAsset {
+  id           String      @id @default(cuid())
+  tenantId     String
+  uploadedById String
+  fileName     String
+  fileSize     Int
+  mimeType     String
+  s3Key        String      @unique
+  s3Bucket     String
+  status       AssetStatus @default(PENDING)
+  metadata     Json?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  uploadedBy User   @relation(fields: [uploadedById], references: [id])
+
+  @@index([tenantId])
+  @@index([s3Key])
+}
